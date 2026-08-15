@@ -2,6 +2,10 @@
   "name": "ats-pro",
   "version": "0.1.0",
   "private": true,
+  "author": {
+    "name": "Yehia Ahmed Moussa",
+    "url": "https://github.com/Eng-yaya"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
