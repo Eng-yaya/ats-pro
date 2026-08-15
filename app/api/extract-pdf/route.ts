@@ -1,68 +1,93 @@
-import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import { execFileSync } from 'child_process';
+import { NextResponse } from "next/server";
+import { CanvasFactory } from "pdf-parse/worker";
+import { PDFParse } from "pdf-parse";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
+export const maxDuration = 30;
 
 export async function POST(req: Request) {
+  let parser: PDFParse | null = null;
+
   try {
     const formData = await req.formData();
-    const file = formData.get('file') as File | null;
+    const file = formData.get("file");
 
-    if (!file) {
-      return NextResponse.json({ error: 'No file uploaded.' }, { status: 400 });
+    if (!(file instanceof File)) {
+      return NextResponse.json(
+        { error: "No file uploaded." },
+        { status: 400 }
+      );
     }
 
-    if (file.type !== 'application/pdf') {
-      return NextResponse.json({ error: 'Only PDF files are supported.' }, { status: 400 });
+    if (
+      file.type !== "application/pdf" &&
+      !file.name.toLowerCase().endsWith(".pdf")
+    ) {
+      return NextResponse.json(
+        { error: "Only PDF files are supported." },
+        { status: 400 }
+      );
     }
 
     const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const data = new Uint8Array(arrayBuffer);
 
-    const tempFile = path.join(
-      os.tmpdir(),
-      `ats-pro-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`
-    );
-    fs.writeFileSync(tempFile, buffer);
-
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'extract-pdf.mjs');
-
-    let text = '';
-    try {
-      const stdout = execFileSync(process.execPath, [scriptPath, tempFile], {
-        encoding: 'utf8',
-        maxBuffer: 20 * 1024 * 1024,
-      });
-      const result = JSON.parse(stdout);
-      if (result.error) {
-        throw new Error(result.error);
-      }
-      text = typeof result.text === 'string' ? result.text : '';
-    } finally {
-      try {
-        fs.unlinkSync(tempFile);
-      } catch {
-        // ignore cleanup errors
-      }
+    if (data.length === 0) {
+      return NextResponse.json(
+        { error: "The uploaded PDF is empty." },
+        { status: 400 }
+      );
     }
 
-    if (!text.trim()) {
+    parser = new PDFParse({
+      data,
+      CanvasFactory,
+    });
+
+    const result = await parser.getText();
+
+    const text = (result.text || "")
+      .replace(/--\s*\d+\s*of\s*\d+\s*--/g, "")
+      .trim();
+
+    if (!text) {
       return NextResponse.json(
         {
           error:
-            'Could not extract any text from this PDF. It may be a scanned image-based PDF (OCR support is planned for a later step).',
+            "Could not extract text from this PDF. The PDF may be scanned or image-based.",
         },
         { status: 422 }
       );
     }
 
-    return NextResponse.json({ text, characterCount: text.length });
+    console.log(
+      `PDF extracted successfully: ${file.name} (${text.length} characters)`
+    );
+
+    return NextResponse.json({
+      text,
+      characterCount: text.length,
+    });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    console.error('PDF extraction error:', message);
-    return NextResponse.json({ error: 'Failed to extract text from the PDF.' }, { status: 500 });
+    console.error("PDF extraction error:", error);
+
+    const message =
+      error instanceof Error ? error.message : String(error);
+
+    return NextResponse.json(
+      {
+        error: "Failed to extract text from the PDF.",
+        details: message,
+      },
+      { status: 500 }
+    );
+  } finally {
+    if (parser) {
+      try {
+        await parser.destroy();
+      } catch (cleanupError) {
+        console.error("PDF parser cleanup error:", cleanupError);
+      }
+    }
   }
 }
